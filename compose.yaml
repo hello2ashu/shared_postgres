@@ -3,6 +3,11 @@
 # service in the Docmost stack. None of these three need a Postgres extension, so
 # they can safely share one plain instance.
 #
+# Also hosts shared_redis, which replaces Dawarich's and Docmost's separate Redis
+# containers. They're isolated from each other via Redis's logical DB index (not a
+# separate instance): Dawarich uses DB 0, Docmost uses DB 1. See deploy-dawarich.yaml
+# and deploy-docmost.yaml for the REDIS_URL values that select those.
+#
 # SETUP (if this stack has NOT been deployed yet):
 # 1. Create /volume1/docker/shared-postgres/init/init.sql (Postgres only runs files in
 #    this folder on a completely fresh, empty data directory) with:
@@ -19,21 +24,16 @@
 # 2. Deploy this stack, confirm all three DBs/users were created (docker exec -it
 #    Shared-Postgres psql -U postgres -c "\l").
 #
-# SETUP (if this stack is ALREADY running with linkwarden/airtrail migrated) —
-# init.sql will NOT re-run automatically since the data directory isn't fresh anymore.
-# Just run the docmost lines directly instead:
+# SETUP (if this stack is ALREADY running with linkwarden/airtrail/docmost migrated) —
+# init.sql will NOT re-run automatically since the data directory isn't fresh anymore,
+# but shared_redis is a brand new service, so a plain `docker compose up -d` on this
+# file will add it alongside the running shared_postgres without touching it.
 #
-#   docker exec -it Shared-Postgres psql -U postgres -c \
-#     "CREATE USER docmostuser WITH PASSWORD 'REPLACE_ME';"
-#   docker exec -it Shared-Postgres psql -U postgres -c \
-#     "CREATE DATABASE docmost OWNER docmostuser;"
-#
-# (Still worth adding the same lines to init.sql for documentation / disaster-recovery
-# rebuilds, even though they won't execute again on this running instance.)
-#
-# 3. Migrate data: pg_dump from each old DB container, pg_restore into this one.
-# 4. Then deploy the updated linkwarden/airtrail/docmost stacks and remove the old
-#    "postgres" / "db" services and their volumes once you've confirmed data is intact.
+# 3. Postgres: migrate data with pg_dump from each old DB container, pg_restore into
+#    this one (see prior instructions for the exact commands per app).
+#    Redis: no data migration needed — see the Redis cutover steps provided separately.
+# 4. Then deploy the updated linkwarden/airtrail/docmost/dawarich stacks and remove the
+#    old "postgres"/"db"/"redis" services and volumes once you've confirmed data is intact.
 
 services:
   shared_postgres:
@@ -55,6 +55,34 @@ services:
       start_period: 20s
       timeout: 10s
     mem_limit: 512m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    restart: on-failure:5
+
+  shared_redis:
+    image: redis:8.10.1-alpine
+    container_name: Shared-Redis
+    hostname: shared_redis
+    command: redis-server
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    user: 1026:100
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping || exit 1"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
+      timeout: 5s
+    volumes:
+      - /volume1/docker/shared-redis/data:/data:rw
+    environment:
+      TZ: America/Los_Angeles
+    mem_limit: 384m   # combined Dawarich (256m) + Docmost (256m) allowances, trimmed since
+                      # actual Redis usage for both is far below that ceiling in practice
     logging:
       driver: "json-file"
       options:
