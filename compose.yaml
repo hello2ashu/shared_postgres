@@ -1,0 +1,49 @@
+# NEW STACK — replaces the standalone "postgres" service in the Linkwarden/Karakeep
+# stack and the standalone "db" service in the AirTrail stack. Neither Linkwarden nor
+# AirTrail needs a Postgres extension, so they can safely share one plain instance.
+#
+# SETUP:
+# 1. Create /volume1/docker/shared-postgres/init/init.sql (on first boot only, Postgres
+#    runs every .sql/.sh file in that folder) with:
+#
+#      CREATE USER linkwardenuser WITH PASSWORD 'REPLACE_ME';
+#      CREATE DATABASE linkwarden OWNER linkwardenuser;
+#
+#      CREATE USER airtrailuser WITH PASSWORD 'REPLACE_ME';
+#      CREATE DATABASE airtrail OWNER airtrailuser;
+#
+# 2. Deploy this stack first, confirm both DBs/users were created (docker logs Shared-Postgres).
+# 3. Migrate data: pg_dump from each old DB container, pg_restore into this one.
+# 4. Then deploy the updated linkwarden and airtrail stacks below, and remove the old
+#    "postgres" / "db" services and their volumes once you've confirmed data is intact.
+
+services:
+  shared_postgres:
+    image: postgres:17-alpine
+    container_name: Shared-Postgres
+    hostname: shared_postgres
+    environment:
+      # Only used to create the superuser; app databases/users come from init.sql
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${sharedpgadminpass}
+      TZ: America/Los_Angeles
+    volumes:
+      - /volume1/docker/shared-postgres/data:/var/lib/postgresql/data:rw
+      - /volume1/docker/shared-postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      retries: 5
+      start_period: 20s
+      timeout: 10s
+    mem_limit: 512m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    restart: on-failure:5
+
+networks:
+  default:
+    name: shared-postgres_net
